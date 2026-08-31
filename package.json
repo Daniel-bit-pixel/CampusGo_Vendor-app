@@ -1,0 +1,9 @@
+{
+  "name": "campusgo-vendor-app",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Standalone vendor app for CampusGo — upload and manage available meals, gas, laundry, and stationery items.",
+  "scripts": {
+    "start": "npx --yes serve -l 4000 ."
+  }
+}
