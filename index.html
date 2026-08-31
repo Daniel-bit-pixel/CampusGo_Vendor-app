@@ -138,7 +138,7 @@
 // HTML file with no build step, so there's no environment variable
 // mechanism. Change them, then redeploy (or just re-upload the file).
 // ============================================================
-const API_BASE = "http://localhost:5000/api"; // ← your deployed backend's URL + /api
+const API_BASE = "https://campusgo-backend-8qqr.onrender.com"; // ← your deployed backend's URL + /api
 
 const TOKEN_STORAGE_KEY = "campusgo_vendor_token";
 const BUSINESS_NAME_STORAGE_KEY = "campusgo_vendor_business_name";
@@ -146,7 +146,7 @@ const BUSINESS_NAME_STORAGE_KEY = "campusgo_vendor_business_name";
 // This app is separate from the main CampusGo React app — update this
 // to wherever that app is actually running/deployed, so "← Back to
 // CampusGo" goes somewhere real.
-const CAMPUSGO_APP_URL = "http://localhost:3000"; // ← your deployed customer app's URL
+const CAMPUSGO_APP_URL = "https://campusgo-customer-app.onrender.com"; // ← your deployed customer app's URL
 // ============================================================
 document.getElementById("back-link").href = CAMPUSGO_APP_URL;
 
