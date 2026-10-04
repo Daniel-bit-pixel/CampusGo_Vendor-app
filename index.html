@@ -138,7 +138,7 @@
 // HTML file with no build step, so there's no environment variable
 // mechanism. Change them, then redeploy (or just re-upload the file).
 // ============================================================
-const API_BASE = "https://campusgo-backend-8qqr.onrender.com/api"; // ← your deployed backend's URL + /api
+const API_BASE = "http://localhost:5000/api"; // ← your deployed backend's URL + /api
 
 const TOKEN_STORAGE_KEY = "campusgo_vendor_token";
 const BUSINESS_NAME_STORAGE_KEY = "campusgo_vendor_business_name";
@@ -146,7 +146,7 @@ const BUSINESS_NAME_STORAGE_KEY = "campusgo_vendor_business_name";
 // This app is separate from the main CampusGo React app — update this
 // to wherever that app is actually running/deployed, so "← Back to
 // CampusGo" goes somewhere real.
-const CAMPUSGO_APP_URL = "https://campusgo-customer-app.onrender.com"; // ← your deployed customer app's URL
+const CAMPUSGO_APP_URL = "http://localhost:3000"; // ← your deployed customer app's URL
 // ============================================================
 document.getElementById("back-link").href = CAMPUSGO_APP_URL;
 
@@ -175,6 +175,13 @@ let state = {
   seenOrderIds: null,  // null until the first poll — first poll seeds this without notifying
   hostels: [],
   notifPermission: (typeof Notification !== "undefined" && Notification.permission) || "unsupported",
+  earnings: { pending: 0, paidOut: 0, entries: [] },
+  earningsLoading: false,
+  earningsError: "",
+  bankAccount: null,       // { bank_code, bank_name, account_number, account_name } once saved
+  banks: [],
+  bankForm: { bank_code: "", account_number: "" },
+  savingBank: false,
 };
 
 let ordersPollTimer = null;
@@ -197,6 +204,64 @@ function showToast(msg) {
   el.style.display = "block";
   clearTimeout(showToast._t);
   showToast._t = setTimeout(() => { el.style.display = "none"; }, 2600);
+}
+
+/* ---------------- Earnings & payout account ---------------- */
+
+async function loadEarnings() {
+  state.earningsLoading = true; state.earningsError = ""; render();
+  try {
+    const res = await fetch(`${API_BASE}/vendor/earnings`, { headers: buildAuthHeaders() });
+    if (res.status === 401) return handleExpiredSession();
+    if (!res.ok) throw new Error(`Server responded ${res.status}`);
+    state.earnings = await res.json();
+  } catch (err) {
+    state.earningsError = "Couldn't load your earnings — make sure the CampusGo server is running.";
+  } finally {
+    state.earningsLoading = false; render();
+  }
+}
+
+async function loadBankAccount() {
+  try {
+    const [accRes, banksRes] = await Promise.all([
+      fetch(`${API_BASE}/vendor/bank-account`, { headers: buildAuthHeaders() }),
+      fetch(`${API_BASE}/banks`),
+    ]);
+    if (accRes.status === 401) return handleExpiredSession();
+    if (accRes.ok) state.bankAccount = await accRes.json();
+    if (banksRes.ok) state.banks = await banksRes.json();
+  } catch (err) {
+    // Non-critical — the payout form will just show without a bank list/prefill.
+  } finally {
+    render();
+  }
+}
+
+async function saveBankAccount(e) {
+  e.preventDefault();
+  const bankCode = document.getElementById("bank-select").value;
+  const accountNumber = document.getElementById("account-number-input").value.trim();
+  if (!bankCode || !accountNumber) {
+    showToast("Pick a bank and enter your account number.");
+    return;
+  }
+  state.savingBank = true; render();
+  try {
+    const res = await fetch(`${API_BASE}/vendor/bank-account`, {
+      method: "POST", headers: buildAuthHeaders(),
+      body: JSON.stringify({ bank_code: bankCode, account_number: accountNumber }),
+    });
+    if (res.status === 401) return handleExpiredSession();
+    const body = await res.json();
+    if (!res.ok) throw new Error(body.error || `Server responded ${res.status}`);
+    showToast(`Confirmed: ${body.account_name} ✓`);
+    await loadBankAccount();
+  } catch (err) {
+    showToast(err.message || "Couldn't save that account.");
+  } finally {
+    state.savingBank = false; render();
+  }
 }
 
 async function loadItems() {
@@ -333,6 +398,7 @@ function switchView(view) {
   if (view === "orders") startOrdersPolling();
   else stopOrdersPolling();
   if (view === "catalog") loadItems();
+  if (view === "earnings") { loadEarnings(); loadBankAccount(); }
 }
 
 function handleExpiredSession() {
@@ -534,6 +600,7 @@ function render() {
     <div class="tabs" style="margin-bottom:16px;">
       <div class="tab ${state.view === "orders" ? "active" : ""}" id="view-orders-tab">🔔 Orders</div>
       <div class="tab ${state.view === "catalog" ? "active" : ""}" id="view-catalog-tab">📋 Catalog</div>
+      <div class="tab ${state.view === "earnings" ? "active" : ""}" id="view-earnings-tab">💰 Earnings</div>
     </div>
   `;
 
@@ -593,12 +660,94 @@ function render() {
     `;
     document.getElementById("view-orders-tab").addEventListener("click", () => switchView("orders"));
     document.getElementById("view-catalog-tab").addEventListener("click", () => switchView("catalog"));
+    document.getElementById("view-earnings-tab").addEventListener("click", () => switchView("earnings"));
     document.getElementById("switch-business-btn").addEventListener("click", switchBusiness);
     document.getElementById("lock-btn").addEventListener("click", lockOut);
     document.getElementById("enable-notif-btn")?.addEventListener("click", requestNotificationPermission);
     app.querySelectorAll('[data-action="start-preparing"]').forEach((btn) => {
       btn.addEventListener("click", () => startPreparing(btn.dataset.orderId));
     });
+    return;
+  }
+
+  if (state.view === "earnings") {
+    const e = state.earnings;
+    const entriesHtml = e.entries.length === 0
+      ? `<div class="empty">${state.earningsLoading ? "Loading…" : "No paid orders yet — earnings appear here once a customer's payment is verified."}</div>`
+      : e.entries.map((row) => `
+          <div class="item-row">
+            <div class="item-info">
+              <div class="item-name">${escapeHtml(row.order_code)}</div>
+              <div class="item-meta">Gross ${naira(row.gross_amount)} · Commission ${naira(row.commission_amount)}</div>
+            </div>
+            <div style="text-align:right;">
+              <div class="item-price">${naira(row.net_amount)}</div>
+              <div style="font-size:12px; margin-top:2px; color:${row.payout_status === "paid" ? "var(--palm)" : "var(--muted)"};">
+                ${row.payout_status === "paid" ? "✓ Paid out" : "Pending payout"}
+              </div>
+            </div>
+          </div>
+        `).join("");
+
+    const bankSection = state.bankAccount ? `
+      <div class="card" style="margin-bottom:20px;">
+        <h3 style="font-size:16px; margin:0 0 10px;">Payout account</h3>
+        <p style="font-size:13px; color:var(--muted); margin:0 0 4px;">${escapeHtml(state.bankAccount.bank_name)} — ${escapeHtml(state.bankAccount.account_number)}</p>
+        <p style="font-size:13px; color:var(--palmLight); margin:0 0 14px;">✓ ${escapeHtml(state.bankAccount.account_name)}</p>
+        <button class="btn btn-ghost btn-sm" id="change-bank-btn">Change account</button>
+      </div>
+    ` : `
+      <div class="card" style="margin-bottom:20px;">
+        <h3 style="font-size:16px; margin:0 0 6px;">Set up your payout account</h3>
+        <p style="font-size:13px; color:var(--muted); margin:0 0 16px;">Your earnings are sent here once an admin processes a payout. We verify the account name with your bank before saving it.</p>
+        <form id="bank-form" class="form-grid">
+          <div class="field">
+            <label>Bank</label>
+            <select id="bank-select" required>
+              <option value="" disabled selected>Select your bank</option>
+              ${state.banks.map((b) => `<option value="${b.code}">${escapeHtml(b.name)}</option>`).join("")}
+            </select>
+          </div>
+          <div class="field">
+            <label>Account number</label>
+            <input id="account-number-input" type="text" inputmode="numeric" placeholder="0123456789" required />
+          </div>
+          <div class="full">
+            <button type="submit" class="btn btn-primary" ${state.savingBank ? "disabled" : ""}>${state.savingBank ? "Verifying…" : "Save account"}</button>
+          </div>
+        </form>
+      </div>
+    `;
+
+    app.innerHTML = `
+      <div class="wrap">
+        ${headerHtml}
+        ${state.earningsError ? `<div class="banner error">${escapeHtml(state.earningsError)}</div>` : ""}
+
+        <div class="form-grid" style="margin-bottom:20px;">
+          <div class="card"><div class="item-meta">Pending payout</div><div style="font-size:26px; font-weight:800; margin-top:4px;">${naira(e.pending)}</div></div>
+          <div class="card"><div class="item-meta">Already paid out</div><div style="font-size:26px; font-weight:800; margin-top:4px; color:var(--palmLight);">${naira(e.paidOut)}</div></div>
+        </div>
+
+        ${bankSection}
+
+        <h3 style="font-size:16px; margin:20px 0 12px;">Recent earnings (${e.entries.length})</h3>
+        ${entriesHtml}
+
+        <p style="font-size:12px; color:var(--muted); margin-top:16px;">Payouts are sent by CampusGo's admin, not triggered from here — this page shows what you're owed and where it'll be sent.</p>
+
+        <div style="text-align:center; margin-top:28px;">
+          <button class="btn btn-ghost btn-sm" id="lock-btn">Lock vendor access</button>
+        </div>
+      </div>
+    `;
+    document.getElementById("view-orders-tab").addEventListener("click", () => switchView("orders"));
+    document.getElementById("view-catalog-tab").addEventListener("click", () => switchView("catalog"));
+    document.getElementById("view-earnings-tab").addEventListener("click", () => switchView("earnings"));
+    document.getElementById("switch-business-btn").addEventListener("click", switchBusiness);
+    document.getElementById("lock-btn").addEventListener("click", lockOut);
+    document.getElementById("bank-form")?.addEventListener("submit", saveBankAccount);
+    document.getElementById("change-bank-btn")?.addEventListener("click", () => { state.bankAccount = null; render(); });
     return;
   }
 
@@ -689,6 +838,7 @@ function render() {
 
   document.getElementById("view-orders-tab").addEventListener("click", () => switchView("orders"));
   document.getElementById("view-catalog-tab").addEventListener("click", () => switchView("catalog"));
+  document.getElementById("view-earnings-tab").addEventListener("click", () => switchView("earnings"));
   document.getElementById("switch-business-btn").addEventListener("click", switchBusiness);
   document.getElementById("item-form").addEventListener("submit", (e) => {
     state.form.name = document.getElementById("f-name").value;
