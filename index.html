@@ -74,6 +74,8 @@
     background: var(--surface2); border: 1px solid var(--line); margin-bottom: 10px;
   }
   .item-emoji { font-size: 24px; width: 32px; text-align: center; flex-shrink: 0; }
+  .item-thumb { width: 44px; height: 44px; border-radius: 10px; object-fit: cover; flex-shrink: 0; background: var(--surface3); }
+  .img-preview { width: 96px; height: 96px; border-radius: 12px; object-fit: cover; border: 1px solid var(--line); display: block; margin-bottom: 8px; }
   .item-info { flex: 1; min-width: 0; }
   .item-name { font-weight: 700; font-size: 14px; }
   .item-meta { font-size: 12px; color: var(--muted); margin-top: 2px; }
@@ -140,13 +142,22 @@
 // ============================================================
 const API_BASE = "https://campusgo-backend-8qqr.onrender.com/api"; // ← your deployed backend's URL + /api
 
+// Product photos are uploaded straight from the browser to Cloudinary
+// (free tier). Create an account at cloudinary.com, then:
+//   CLOUDINARY_CLOUD_NAME   → shown on your Cloudinary dashboard
+//   CLOUDINARY_UPLOAD_PRESET → Settings → Upload → Upload presets →
+//                              add one with Signing Mode = "Unsigned"
+// Neither value is secret. Never put your Cloudinary API secret here.
+const CLOUDINARY_CLOUD_NAME = "lxse9vcd";
+const CLOUDINARY_UPLOAD_PRESET = "CampusGo-products";
+
 const TOKEN_STORAGE_KEY = "campusgo_vendor_token";
 const BUSINESS_NAME_STORAGE_KEY = "campusgo_vendor_business_name";
 
 // This app is separate from the main CampusGo React app — update this
 // to wherever that app is actually running/deployed, so "← Back to
 // CampusGo" goes somewhere real.
-const CAMPUSGO_APP_URL = "https://campusgo-customer-app.onrender.com"; // ← your deployed customer app's URL
+const CAMPUSGO_APP_URL = "http://localhost:3000"; // ← your deployed customer app's URL
 // ============================================================
 document.getElementById("back-link").href = CAMPUSGO_APP_URL;
 
@@ -182,12 +193,13 @@ let state = {
   banks: [],
   bankForm: { bank_code: "", account_number: "" },
   savingBank: false,
+  uploadingImage: false,
 };
 
 let ordersPollTimer = null;
 
 function emptyForm() {
-  return { name: "", category: "", price: "", emoji: "", unit: "" };
+  return { name: "", category: "", price: "", emoji: "", unit: "", image_url: "" };
 }
 
 function buildAuthHeaders() {
@@ -409,6 +421,46 @@ function handleExpiredSession() {
   render();
 }
 
+// The page is re-drawn from state, so anything typed into the form has
+// to be copied into state before a re-draw or it would be lost.
+function captureFormFields() {
+  const g = (id) => document.getElementById(id);
+  if (!g("f-name")) return;
+  state.form.name = g("f-name").value;
+  state.form.category = g("f-category").value;
+  state.form.price = g("f-price").value;
+  state.form.emoji = g("f-emoji").value;
+  state.form.unit = g("f-unit").value;
+}
+
+async function handleImageChosen(file) {
+  if (!file) return;
+  if (!file.type.startsWith("image/")) { showToast("Please choose an image file."); return; }
+  if (file.size > 5 * 1024 * 1024) { showToast("That photo is over 5 MB — pick a smaller one."); return; }
+  if (CLOUDINARY_CLOUD_NAME === "your-cloud-name") {
+    showToast("Photo uploads aren't set up yet — add your Cloudinary details in index.html.");
+    return;
+  }
+  captureFormFields();
+  state.uploadingImage = true; render();
+  try {
+    const data = new FormData();
+    data.append("file", file);
+    data.append("upload_preset", CLOUDINARY_UPLOAD_PRESET);
+    const res = await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/image/upload`, { method: "POST", body: data });
+    const body = await res.json();
+    if (!res.ok) throw new Error(body.error?.message || "Upload failed");
+    // Ask Cloudinary for a resized, auto-compressed version so customer
+    // pages stay fast on mobile data.
+    state.form.image_url = body.secure_url.replace("/upload/", "/upload/c_fill,w_600,h_600,q_auto,f_auto/");
+    showToast("Photo uploaded ✓");
+  } catch (err) {
+    showToast(`Couldn't upload that photo (${err.message}).`);
+  } finally {
+    state.uploadingImage = false; render();
+  }
+}
+
 async function submitForm(e) {
   e.preventDefault();
   const svc = SERVICES[state.service];
@@ -424,6 +476,7 @@ async function submitForm(e) {
     price: Number(f.price),
     emoji: f.emoji || null,
     unit: f.unit || null,
+    image_url: f.image_url || null,
   };
   const isEdit = state.editingId !== null;
   const url = isEdit ? `${API_BASE}/${svc.table}/${state.editingId}` : `${API_BASE}/${svc.table}`;
@@ -449,7 +502,7 @@ async function submitForm(e) {
 
 function startEdit(item) {
   state.editingId = item.id;
-  state.form = { name: item.name, category: item.category, price: item.price, emoji: item.emoji || "", unit: item.unit || "" };
+  state.form = { name: item.name, category: item.category, price: item.price, emoji: item.emoji || "", unit: item.unit || "", image_url: item.image_url || "" };
   state.error = "";
   render();
   document.getElementById("form-card")?.scrollIntoView({ behavior: "smooth" });
@@ -769,7 +822,7 @@ function render() {
           : `<div class="item-meta" style="margin-top:2px; font-style:italic;">Unclaimed item</div>`;
         return `
         <div class="item-row">
-          <div class="item-emoji">${it.emoji || "🛍️"}</div>
+          ${it.image_url ? `<img class="item-thumb" src="${escapeAttr(it.image_url)}" alt="" />` : `<div class="item-emoji">${it.emoji || "🛍️"}</div>`}
           <div class="item-info">
             <div class="item-name">${escapeHtml(it.name)}</div>
             <div class="item-meta">${escapeHtml(it.category)}${it.unit ? " · " + escapeHtml(it.unit) : ""}</div>
@@ -820,8 +873,15 @@ function render() {
             <label>Unit (optional)</label>
             <input id="f-unit" type="text" placeholder="per plate" value="${escapeAttr(state.form.unit)}" />
           </div>
+          <div class="field full">
+            <label>Product photo (optional)</label>
+            ${state.form.image_url ? `<img class="img-preview" src="${escapeAttr(state.form.image_url)}" alt="Preview" />` : ""}
+            <input id="f-image" type="file" accept="image/*" ${state.uploadingImage ? "disabled" : ""} />
+            <div style="font-size:12px; color:var(--muted); margin-top:6px;">${state.uploadingImage ? "Uploading photo…" : "JPG or PNG, up to 5 MB. Customers see this instead of the emoji."}</div>
+            ${state.form.image_url ? `<button type="button" class="btn btn-ghost btn-sm" id="remove-image-btn" style="margin-top:8px;">Remove photo</button>` : ""}
+          </div>
           <div class="full" style="display:flex; gap:10px; margin-top:6px;">
-            <button type="submit" class="btn btn-primary">${state.editingId !== null ? "Save changes" : "Add item"}</button>
+            <button type="submit" class="btn btn-primary" ${state.uploadingImage ? "disabled" : ""}>${state.editingId !== null ? "Save changes" : "Add item"}</button>
             ${state.editingId !== null ? `<button type="button" class="btn btn-ghost" id="cancel-edit-btn">Cancel</button>` : ""}
           </div>
         </form>
@@ -849,6 +909,8 @@ function render() {
     submitForm(e);
   });
   document.getElementById("cancel-edit-btn")?.addEventListener("click", cancelEdit);
+  document.getElementById("f-image")?.addEventListener("change", (e) => handleImageChosen(e.target.files[0]));
+  document.getElementById("remove-image-btn")?.addEventListener("click", () => { captureFormFields(); state.form.image_url = ""; render(); });
   document.getElementById("lock-btn")?.addEventListener("click", lockOut);
   app.querySelectorAll('[data-action="edit"]').forEach((btn) => {
     btn.addEventListener("click", () => {
